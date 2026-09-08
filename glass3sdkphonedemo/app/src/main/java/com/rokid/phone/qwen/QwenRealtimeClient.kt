@@ -23,17 +23,16 @@ class QwenRealtimeClient(
     private val listener: Listener,
 ) {
     data class Config(
-        val apiKey: String,
-        val workspaceId: String,
-        val endpointHost: String,
-        val model: String,
+        val accessToken: String,
+        val realtimeWsUrl: String,
         val voice: String = "Tina",
         val instructions: String =
             "你是佩戴在第一视角智能眼镜上的中文助手。结合用户语音和最新画面，简短、准确地回答；" +
                 "看不清或不确定时直接说明，不要编造。",
     ) {
         val isComplete: Boolean
-            get() = apiKey.isNotBlank() && workspaceId.isNotBlank()
+            get() = accessToken.isNotBlank() &&
+                (realtimeWsUrl.startsWith("ws://") || realtimeWsUrl.startsWith("wss://"))
     }
 
     enum class State {
@@ -64,17 +63,15 @@ class QwenRealtimeClient(
 
     fun connect() {
         if (!config.isComplete) {
-            listener.onError("缺少 DASHSCOPE_API_KEY 或 DASHSCOPE_WORKSPACE_ID")
+            listener.onError("缺少有效的后端设备令牌或 Realtime 地址")
             return
         }
         if (socket != null) return
 
         listener.onStateChanged(State.CONNECTING)
-        val url = "wss://${config.workspaceId}.${config.endpointHost}/api-ws/v1/realtime" +
-            "?model=${config.model}"
         val request = Request.Builder()
-            .url(url)
-            .header("Authorization", "Bearer ${config.apiKey}")
+            .url(config.realtimeWsUrl)
+            .header("Authorization", "Bearer ${config.accessToken}")
             .header("User-Agent", "rokid-glass3-qwen-poc/1.0")
             .build()
         socket = httpClient.newWebSocket(request, webSocketListener)

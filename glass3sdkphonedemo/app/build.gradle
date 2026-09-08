@@ -3,16 +3,12 @@ plugins {
     alias(libs.plugins.jetbrains.kotlin.android)
 }
 
-def qwenApiKey = providers.environmentVariable("DASHSCOPE_API_KEY")
-        .orElse(providers.gradleProperty("qwen.apiKey"))
+def omniBackendBaseUrl = providers.environmentVariable("OMNI_BACKEND_BASE_URL")
+        .orElse(providers.gradleProperty("omni.backendBaseUrl"))
+        .orElse("http://10.8.0.1")
+def omniEnrollmentToken = providers.environmentVariable("OMNI_DEVICE_ENROLLMENT_TOKEN")
+        .orElse(providers.gradleProperty("omni.deviceEnrollmentToken"))
         .orElse("")
-def qwenWorkspaceId = providers.environmentVariable("DASHSCOPE_WORKSPACE_ID")
-        .orElse(providers.gradleProperty("qwen.workspaceId"))
-        .orElse("")
-def qwenEndpointHost = providers.gradleProperty("qwen.endpointHost")
-        .orElse("cn-beijing.maas.aliyuncs.com")
-def qwenModel = providers.gradleProperty("qwen.model")
-        .orElse("qwen3.5-omni-flash-realtime")
 
 android {
     namespace 'com.rokid.phone'
@@ -25,11 +21,9 @@ android {
         versionCode 1
         versionName "1.0"
 
-        // 仅用于设备 POC。生产环境必须改为业务后端签发短期连接凭证。
-        buildConfigField "String", "QWEN_API_KEY", "\"${qwenApiKey.get()}\""
-        buildConfigField "String", "QWEN_WORKSPACE_ID", "\"${qwenWorkspaceId.get()}\""
-        buildConfigField "String", "QWEN_ENDPOINT_HOST", "\"${qwenEndpointHost.get()}\""
-        buildConfigField "String", "QWEN_MODEL", "\"${qwenModel.get()}\""
+        // 仅保存低权限设备注册口令；百炼 API Key 只存在于华为云后端。
+        buildConfigField "String", "OMNI_BACKEND_BASE_URL", "\"${omniBackendBaseUrl.get()}\""
+        buildConfigField "String", "OMNI_DEVICE_ENROLLMENT_TOKEN", "\"${omniEnrollmentToken.get()}\""
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

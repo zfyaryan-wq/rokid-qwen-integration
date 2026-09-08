@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- POC 的 WireGuard 隧道已加密，因此 debug 包允许访问 10.8.0.1 的 HTTP/WS。
+         release 包不继承该设置；正式环境应使用域名和 HTTPS/WSS。 -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>

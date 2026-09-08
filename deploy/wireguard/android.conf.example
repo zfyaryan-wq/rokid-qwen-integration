@@ -1,0 +1,10 @@
+[Interface]
+PrivateKey = REPLACE_WITH_PHONE_PRIVATE_KEY
+Address = 10.8.0.2/32
+
+[Peer]
+PublicKey = REPLACE_WITH_SERVER_PUBLIC_KEY
+Endpoint = REPLACE_WITH_ECS_EIP:51820
+# Split tunnel: do not steal the Rokid Wi-Fi P2P or normal Internet routes.
+AllowedIPs = 10.8.0.0/24
+PersistentKeepalive = 25

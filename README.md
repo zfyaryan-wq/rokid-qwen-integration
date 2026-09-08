@@ -11,17 +11,19 @@ https://x-docs.rokid.com/docs/
 本分支在官方 `2.2.0-E` Demo 上增加了端到端实时对话：
 
 1. Glass3 将 16 kHz 单声道 PCM 和 NV21 视频流传到手机。
-2. 手机每秒把一张 NV21 帧压成 JPEG，并与 PCM 一起发送到
-   `qwen3.5-omni-flash-realtime`。
-3. Qwen 返回 16 kHz PCM，手机通过 Rokid 经典蓝牙音频流回传眼镜播放。
+2. 手机使用低权限设备注册口令登录华为云后端，获得短期 JWT。
+3. 手机通过后端 WebSocket 代理发送 PCM 和每秒一张 JPEG；百炼长期 API Key
+   只保存在 ECS。
+4. Qwen 返回 16 kHz PCM，手机通过 Rokid 经典蓝牙音频流回传眼镜播放。
 
 ### 配置
 
-API Key 仅供本地设备 POC 使用，不要提交到仓库。PowerShell 中执行：
+先按 [`deploy/README.md`](deploy/README.md) 部署 FastAPI、PostgreSQL、
+Nginx 和 WireGuard。Android debug 包通过 VPN 访问后端：
 
 ```powershell
-$env:DASHSCOPE_API_KEY="你的百炼 API Key"
-$env:DASHSCOPE_WORKSPACE_ID="你的百炼业务空间 ID"
+$env:OMNI_BACKEND_BASE_URL="http://10.8.0.1"
+$env:OMNI_DEVICE_ENROLLMENT_TOKEN="与后端相同的设备注册口令"
 cd .\glass3sdkphonedemo
 .\gradlew.bat assembleDebug
 ```
@@ -29,11 +31,16 @@ cd .\glass3sdkphonedemo
 也可以在用户级 `~/.gradle/gradle.properties` 中配置：
 
 ```properties
-qwen.apiKey=你的百炼APIKey
-qwen.workspaceId=你的业务空间ID
-qwen.endpointHost=cn-beijing.maas.aliyuncs.com
-qwen.model=qwen3.5-omni-flash-realtime
+omni.backendBaseUrl=http://10.8.0.1
+omni.deviceEnrollmentToken=与后端相同的设备注册口令
 ```
+
+仓库结构：
+
+- `backend/`：设备鉴权、Qwen Realtime WebSocket 代理、OBS 预签名上传。
+- `deploy/`：Docker Compose、Nginx、WireGuard 和 systemd。
+- `glass3sdkphonedemo/`：Android 手机端。
+- `glassdemo/`：Glass3 眼镜端。
 
 ### 运行
 
@@ -48,6 +55,6 @@ qwen.model=qwen3.5-omni-flash-realtime
 ### 当前边界
 
 - 首版为半双工：AI 回复期间暂停上传眼镜麦克风，防止扬声器回声再次触发模型。
-- 生产版不能把长期 API Key 放进 APK；需要业务后端签发短期连接凭证。
+- 当前设备注册口令适用于受控 POC；正式运营应改为每台设备独立凭证和吊销机制。
 - 真正的全双工打断、AEC/NS 和弱网优化建议改用 AOQ Client SDK 后实机验收。
 - 图片按 1 fps 上传且限制在 256 KiB 内；完整 15–30 fps 视频应走独立数据采集链路。

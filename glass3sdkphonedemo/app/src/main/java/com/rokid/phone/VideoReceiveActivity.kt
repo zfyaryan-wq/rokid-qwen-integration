@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
 import android.view.SurfaceHolder
@@ -17,6 +18,7 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import com.rokid.phone.data.GlobalData
 import com.rokid.phone.databinding.ActivityVideoReceiveBinding
+import com.rokid.phone.qwen.BackendAuthClient
 import com.rokid.phone.qwen.Nv21JpegEncoder
 import com.rokid.phone.qwen.QwenRealtimeClient
 import com.rokid.phone.utils.TimeUtils
@@ -136,6 +138,7 @@ class VideoReceiveActivity : ComponentActivity() {
     private var lastQwenImageAt = 0L
     private val qwenImageEncoding = AtomicBoolean(false)
     private val qwenAnswerText = StringBuilder()
+    private var qwenSessionGeneration = 0
 
     @Volatile
     private var isPreviewStarted = false
@@ -306,8 +309,11 @@ class VideoReceiveActivity : ComponentActivity() {
         val isARMixEnabled = binding.swArMix.isChecked
         val previewMode = parsePreviewMode()
         if (binding.swQwenOmni.isChecked) {
-            if (BuildConfig.QWEN_API_KEY.isBlank() || BuildConfig.QWEN_WORKSPACE_ID.isBlank()) {
-                toast("请先配置 DASHSCOPE_API_KEY 和 DASHSCOPE_WORKSPACE_ID")
+            if (
+                BuildConfig.OMNI_BACKEND_BASE_URL.isBlank() ||
+                BuildConfig.OMNI_DEVICE_ENROLLMENT_TOKEN.isBlank()
+            ) {
+                toast("请先配置华为云后端地址和设备注册口令")
                 return
             }
             if (previewMode != PreviewMode.NV21) {
@@ -1022,12 +1028,34 @@ class VideoReceiveActivity : ComponentActivity() {
         stopQwen()
         lastQwenImageAt = 0L
         qwenAnswerText.clear()
-        qwenClient = QwenRealtimeClient(
+        val generation = qwenSessionGeneration
+        updateQwenStatus("Qwen：正在登录华为云后端")
+        val deviceId = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ANDROID_ID,
+        ).orEmpty().ifBlank { "unknown-device" }
+        BackendAuthClient(
+            baseUrl = BuildConfig.OMNI_BACKEND_BASE_URL,
+            enrollmentToken = BuildConfig.OMNI_DEVICE_ENROLLMENT_TOKEN,
+        ).login(
+            deviceId = "android-$deviceId",
+            onSuccess = { session ->
+                if (generation != qwenSessionGeneration || !isPreviewStarted) return@login
+                qwenClient = createQwenClient(session).also(QwenRealtimeClient::connect)
+            },
+            onError = { message ->
+                if (generation == qwenSessionGeneration) {
+                    Log.e(TAG, message)
+                    updateQwenStatus("Qwen 错误：$message")
+                }
+            },
+        )
+    }
+
+    private fun createQwenClient(session: BackendAuthClient.Session) = QwenRealtimeClient(
             config = QwenRealtimeClient.Config(
-                apiKey = BuildConfig.QWEN_API_KEY,
-                workspaceId = BuildConfig.QWEN_WORKSPACE_ID,
-                endpointHost = BuildConfig.QWEN_ENDPOINT_HOST,
-                model = BuildConfig.QWEN_MODEL,
+                accessToken = session.accessToken,
+                realtimeWsUrl = session.realtimeWsUrl,
             ),
             listener = object : QwenRealtimeClient.Listener {
                 override fun onStateChanged(state: QwenRealtimeClient.State) {
@@ -1064,10 +1092,10 @@ class VideoReceiveActivity : ComponentActivity() {
                     updateQwenStatus("Qwen 错误：$message")
                 }
             },
-        ).also(QwenRealtimeClient::connect)
-    }
+        )
 
     private fun stopQwen() {
+        qwenSessionGeneration++
         qwenClient?.close()
         qwenClient = null
         qwenImageEncoding.set(false)

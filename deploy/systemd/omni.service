@@ -1,0 +1,16 @@
+[Unit]
+Description=Omni Cloud Backend
+After=docker.service network-online.target wg-quick@wg0.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/omni/deploy
+ExecStart=/usr/bin/docker compose up -d --build
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
