@@ -3,6 +3,17 @@ plugins {
     alias(libs.plugins.jetbrains.kotlin.android)
 }
 
+def qwenApiKey = providers.environmentVariable("DASHSCOPE_API_KEY")
+        .orElse(providers.gradleProperty("qwen.apiKey"))
+        .orElse("")
+def qwenWorkspaceId = providers.environmentVariable("DASHSCOPE_WORKSPACE_ID")
+        .orElse(providers.gradleProperty("qwen.workspaceId"))
+        .orElse("")
+def qwenEndpointHost = providers.gradleProperty("qwen.endpointHost")
+        .orElse("cn-beijing.maas.aliyuncs.com")
+def qwenModel = providers.gradleProperty("qwen.model")
+        .orElse("qwen3.5-omni-flash-realtime")
+
 android {
     namespace 'com.rokid.phone'
     compileSdk 34
@@ -13,6 +24,12 @@ android {
         targetSdk 34
         versionCode 1
         versionName "1.0"
+
+        // 仅用于设备 POC。生产环境必须改为业务后端签发短期连接凭证。
+        buildConfigField "String", "QWEN_API_KEY", "\"${qwenApiKey.get()}\""
+        buildConfigField "String", "QWEN_WORKSPACE_ID", "\"${qwenWorkspaceId.get()}\""
+        buildConfigField "String", "QWEN_ENDPOINT_HOST", "\"${qwenEndpointHost.get()}\""
+        buildConfigField "String", "QWEN_MODEL", "\"${qwenModel.get()}\""
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -41,6 +58,7 @@ android {
     }
     buildFeatures {
         viewBinding true
+        buildConfig true
     }
     viewBinding {
         enable = true
@@ -88,6 +106,7 @@ dependencies {
     implementation("com.google.android.exoplayer:exoplayer:2.19.1")
     implementation 'com.squareup.retrofit2:retrofit:2.9.0'
     implementation 'com.squareup.retrofit2:converter-gson:2.9.0'
+    implementation 'com.squareup.okhttp3:okhttp:4.9.3'
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
     implementation("com.guolindev.permissionx:permissionx:1.8.1")
     implementation 'com.googlecode.mp4parser:isoparser:1.1.22'

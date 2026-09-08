@@ -17,6 +17,8 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import com.rokid.phone.data.GlobalData
 import com.rokid.phone.databinding.ActivityVideoReceiveBinding
+import com.rokid.phone.qwen.Nv21JpegEncoder
+import com.rokid.phone.qwen.QwenRealtimeClient
 import com.rokid.phone.utils.TimeUtils
 import com.rokid.phone.video.FrameRateMeter
 import com.rokid.phone.video.FitCenterScaleCalculator
@@ -41,6 +43,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
 class VideoReceiveActivity : ComponentActivity() {
@@ -129,6 +132,10 @@ class VideoReceiveActivity : ComponentActivity() {
     )
     private var h264DisplayWidth = 0
     private var h264DisplayHeight = 0
+    private var qwenClient: QwenRealtimeClient? = null
+    private var lastQwenImageAt = 0L
+    private val qwenImageEncoding = AtomicBoolean(false)
+    private val qwenAnswerText = StringBuilder()
 
     @Volatile
     private var isPreviewStarted = false
@@ -161,6 +168,7 @@ class VideoReceiveActivity : ComponentActivity() {
         const val STOP_VIDEO_TIMEOUT_MS = 2_000L
         const val REMOTE_RESTART_COOLDOWN_MS = 5_000L
         const val RECOVERY_STABLE_TIME_MS = 10_000L
+        const val QWEN_IMAGE_INTERVAL_MS = 1_000L
         val DEFAULT_RESOLUTION = ResolutionOption(2400, 1800)
         // Glass3 传感器方向为 270°，眼镜端自定义流会交换输出宽高后请求 Camera2。
         // 这里只展示已实测可用、且交换后的 Camera2 纹理尺寸也由 HAL 支持的横屏尺寸。
@@ -180,6 +188,16 @@ class VideoReceiveActivity : ComponentActivity() {
         initH264Surface()
         binding.btnStartPreview.setOnClickListener {
             validateAndStartPreview()
+        }
+        binding.swQwenOmni.setOnCheckedChangeListener { _, enabled ->
+            if (enabled) {
+                binding.spinnerPreviewMode.setSelection(PreviewMode.NV21.ordinal)
+                val qwenResolution = ResolutionOption(640, 480)
+                fillResolutionInputs(qwenResolution)
+                SUPPORTED_RESOLUTIONS.indexOf(qwenResolution)
+                    .takeIf { it >= 0 }
+                    ?.let(binding.spinnerResolutionPreset::setSelection)
+            }
         }
         binding.glsurfaceview.setFpsListener { fps ->
             if (currentConfig?.previewMode == PreviewMode.NV21) {
@@ -263,6 +281,7 @@ class VideoReceiveActivity : ComponentActivity() {
                 binding.glsurfaceview.visibility = View.GONE
                 binding.h264SurfaceContainer.visibility = View.GONE
                 binding.tvFps.visibility = View.GONE
+                binding.tvQwenStatus.visibility = View.GONE
             }
 
             PageState.PREVIEW -> {
@@ -271,6 +290,8 @@ class VideoReceiveActivity : ComponentActivity() {
                 binding.glsurfaceview.visibility = if (mode == PreviewMode.NV21) View.VISIBLE else View.GONE
                 binding.h264SurfaceContainer.visibility = if (mode == PreviewMode.H264) View.VISIBLE else View.GONE
                 binding.tvFps.visibility = View.VISIBLE
+                binding.tvQwenStatus.visibility =
+                    if (binding.swQwenOmni.isChecked) View.VISIBLE else View.GONE
             }
         }
     }
@@ -284,6 +305,20 @@ class VideoReceiveActivity : ComponentActivity() {
         val resolution = parseResolution() ?: return
         val isARMixEnabled = binding.swArMix.isChecked
         val previewMode = parsePreviewMode()
+        if (binding.swQwenOmni.isChecked) {
+            if (BuildConfig.QWEN_API_KEY.isBlank() || BuildConfig.QWEN_WORKSPACE_ID.isBlank()) {
+                toast("请先配置 DASHSCOPE_API_KEY 和 DASHSCOPE_WORKSPACE_ID")
+                return
+            }
+            if (previewMode != PreviewMode.NV21) {
+                toast("Qwen 需要 NV21 图像帧，请选择 NV21 预览")
+                return
+            }
+            if (resolution.width > 640 || resolution.height > 480) {
+                toast("Qwen POC 请使用 640 × 480，避免图片超过 256 KiB")
+                return
+            }
+        }
 
         checkP2pAndStartPreview(fps, bitrate, resolution, isARMixEnabled, previewMode)
     }
@@ -408,6 +443,7 @@ class VideoReceiveActivity : ComponentActivity() {
             return
         }
         currentConfig = PreviewConfig(fps, bitrate, resolution, isARMixEnabled, previewMode)
+        if (binding.swQwenOmni.isChecked) startQwen()
         PSecuritySDK.getWifiP2PClientService()?.setAutoDecodeH264ToNv21(previewMode == PreviewMode.NV21)
         resetFps()
         updateStreamState("等待首帧")
@@ -781,6 +817,7 @@ class VideoReceiveActivity : ComponentActivity() {
     @SuppressLint("SetTextI18n")
     private fun stopPreview() {
         isPreviewStarted = false
+        stopQwen()
         streamRequestVersion++
         startPreviewJob?.cancel()
         videoWatchdogJob?.cancel()
@@ -823,6 +860,7 @@ class VideoReceiveActivity : ComponentActivity() {
             val callbackEpoch = videoFrameEpoch
             val ownedFrame = data.copyOf()
             onVideoFrameReceived("NV21", width, height)
+            offerQwenImage(ownedFrame, width, height)
             mainScope.launch {
                 if (
                     callbackEpoch == videoFrameEpoch &&
@@ -873,7 +911,11 @@ class VideoReceiveActivity : ComponentActivity() {
                 audioRequestCount = 0
                 audioWatchdogJob?.cancel()
             }
-            audioTrack.write(buffer, 0, buffer.size)
+            if (binding.swQwenOmni.isChecked) {
+                qwenClient?.sendAudio(buffer)
+            } else {
+                audioTrack.write(buffer, 0, buffer.size)
+            }
 //            Log.d(TAG,"--------onClassicBTAudioStream--")
         }
     }
@@ -974,6 +1016,82 @@ class VideoReceiveActivity : ComponentActivity() {
         isAudioRequestedForCurrentStream = true
         Log.d(TAG, "requestAudioStreamAfterFirstVideoFrame: version=$requestVersion")
         requestAudioStream(requestVersion, "first video frame received")
+    }
+
+    private fun startQwen() {
+        stopQwen()
+        lastQwenImageAt = 0L
+        qwenAnswerText.clear()
+        qwenClient = QwenRealtimeClient(
+            config = QwenRealtimeClient.Config(
+                apiKey = BuildConfig.QWEN_API_KEY,
+                workspaceId = BuildConfig.QWEN_WORKSPACE_ID,
+                endpointHost = BuildConfig.QWEN_ENDPOINT_HOST,
+                model = BuildConfig.QWEN_MODEL,
+            ),
+            listener = object : QwenRealtimeClient.Listener {
+                override fun onStateChanged(state: QwenRealtimeClient.State) {
+                    if (state == QwenRealtimeClient.State.RESPONDING) qwenAnswerText.clear()
+                    val label = when (state) {
+                        QwenRealtimeClient.State.DISCONNECTED -> "Qwen：未连接"
+                        QwenRealtimeClient.State.CONNECTING -> "Qwen：连接中"
+                        QwenRealtimeClient.State.READY -> "Qwen：正在聆听"
+                        QwenRealtimeClient.State.RESPONDING -> "Qwen：回复中（半双工防回声）"
+                    }
+                    updateQwenStatus(label)
+                }
+
+                override fun onInputTranscript(text: String) {
+                    if (text.isNotBlank()) updateQwenStatus("你：$text")
+                }
+
+                override fun onOutputTranscriptDelta(text: String) {
+                    if (text.isBlank()) return
+                    qwenAnswerText.append(text)
+                    if (qwenAnswerText.length > 120) {
+                        qwenAnswerText.delete(0, qwenAnswerText.length - 120)
+                    }
+                    updateQwenStatus("Qwen：$qwenAnswerText")
+                }
+
+                override fun onAudioDelta(pcm16: ByteArray) {
+                    // Qwen 输出已配置为 16 kHz PCM，可直接交给眼镜端 AudioTrack。
+                    PSecuritySDK.getMessageService()?.sendAudioStreamDataByClassicBT(pcm16)
+                }
+
+                override fun onError(message: String) {
+                    Log.e(TAG, message)
+                    updateQwenStatus("Qwen 错误：$message")
+                }
+            },
+        ).also(QwenRealtimeClient::connect)
+    }
+
+    private fun stopQwen() {
+        qwenClient?.close()
+        qwenClient = null
+        qwenImageEncoding.set(false)
+    }
+
+    private fun offerQwenImage(nv21: ByteArray, width: Int, height: Int) {
+        val client = qwenClient ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastQwenImageAt < QWEN_IMAGE_INTERVAL_MS) return
+        if (!qwenImageEncoding.compareAndSet(false, true)) return
+        lastQwenImageAt = now
+        lifecycleScope.launch(Dispatchers.Default) {
+            try {
+                Nv21JpegEncoder.encode(nv21, width, height)?.let(client::sendImage)
+            } finally {
+                qwenImageEncoding.set(false)
+            }
+        }
+    }
+
+    private fun updateQwenStatus(text: String) {
+        runOnUiThread {
+            if (!isFinishing && !isDestroyed) binding.tvQwenStatus.text = text
+        }
     }
 
     /* ================= 生命周期 ================= */
